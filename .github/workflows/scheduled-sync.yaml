@@ -2,7 +2,7 @@ name: Sync from Upstream Prebid.js (keep local workflows)
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # Daily at 03:00 UTC
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 jobs:
@@ -32,11 +32,11 @@ jobs:
       - name: Merge upstream/master
         run: |
           git checkout master
-          git merge upstream/master --no-edit || echo "Merge with conflicts (ignored)"
+          git merge upstream/master --no-edit
 
       - name: Restore local workflows
         run: |
-          rm -rf .github/workflows
+          rm -rf .github/*
           cp -r /tmp/local-workflows .github/workflows
           git add .github/workflows
 
@@ -44,5 +44,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git commit -m "Sync from upstream (preserving local workflows)" || echo "No changes to commit"
+          git commit -m "Sync from upstream (preserving local workflows)"
           git push origin master
