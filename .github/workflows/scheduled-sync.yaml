@@ -1,0 +1,48 @@
+name: Sync from Upstream Prebid.js (keep local workflows)
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/prebid/Prebid.js.git
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Stash local workflows (save your own version)
+        run: |
+          cp -r .github/workflows /tmp/local-workflows
+
+      - name: Merge upstream/master
+        run: |
+          git checkout master
+          git merge upstream/master --no-edit || echo "Merge with conflicts (ignored)"
+
+      - name: Restore local workflows
+        run: |
+          rm -rf .github/workflows
+          cp -r /tmp/local-workflows .github/workflows
+          git add .github/workflows
+
+      - name: Commit and push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git commit -m "Sync from upstream (preserving local workflows)" || echo "No changes to commit"
+          git push origin master
