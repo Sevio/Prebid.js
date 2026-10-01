@@ -196,6 +196,14 @@ pbjs.setConfig({
         },
         {
             name: "startioId"
+        },
+        {
+            name: "sevioId",
+            storage: {
+                type: "cookie&html5",
+                name: "_sevioId",
+                expires: 30
+            }
         }
         ],
         syncDelay: 5000,
