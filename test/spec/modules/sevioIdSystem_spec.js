@@ -17,12 +17,17 @@ import {
 
 const STORAGE_NAME = '_sevioId';
 const EXPIRED_COOKIE_DATE = 'Thu, 01 Jan 1970 00:00:01 GMT';
+const CLIENT_ID = 'bc9622f6-21fb-45ca-84b2-b33d93e1d570';
+const ENVELOPE = 'AS7i5jqh1rOtn9idXYXugm103zblaG09MD8g0U1OY739T85AXKCqALssQD9h7yEx0g';
+const NEW_ENVELOPE = 'AZZfD-ZYoba9ucFDG0N-4c-AGHd0eOeS1WqUDXQtCBW9sshtI5JEKG1_og68ha1VIg';
+const EMAIL_HASH = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
 
 describe('Sevio ID System', function () {
   let sandbox;
 
   const validConfig = {
     name: 'sevioId',
+    params: { clientId: CLIENT_ID },
     storage: { type: 'cookie&html5', name: STORAGE_NAME, expires: 30 }
   };
 
@@ -38,8 +43,12 @@ describe('Sevio ID System', function () {
     config.resetConfig();
   });
 
-  function requestParams(request) {
-    return Object.fromEntries(new URL(request.url).searchParams.entries());
+  function requestBody(request) {
+    return JSON.parse(request.requestBody);
+  }
+
+  function respondWith(request, body) {
+    request.respond(200, { 'Content-Type': 'application/json' }, typeof body === 'string' ? body : JSON.stringify(body));
   }
 
   describe('module registration', function () {
@@ -90,8 +99,22 @@ describe('Sevio ID System', function () {
       expect(server.requests.length).to.equal(0);
     });
 
+    [
+      ['no params', undefined],
+      ['no clientId', {}],
+      ['a blank clientId', { clientId: '  ' }],
+      ['a non-string clientId', { clientId: 123 }]
+    ].forEach(([desc, params]) => {
+      it(`returns nothing, logs an error and makes no request with ${desc}`, function () {
+        const result = sevioIdSubmodule.getId({ ...validConfig, params }, {});
+        expect(result).to.be.undefined;
+        expect(server.requests.length).to.equal(0);
+        sinon.assert.calledOnce(utils.logError);
+      });
+    });
+
     it('returns nothing, logs an error and makes no request without storage', function () {
-      const result = sevioIdSubmodule.getId({ name: 'sevioId' }, {});
+      const result = sevioIdSubmodule.getId({ name: 'sevioId', params: { clientId: CLIENT_ID } }, {});
       expect(result).to.be.undefined;
       expect(server.requests.length).to.equal(0);
       sinon.assert.calledOnce(utils.logError);
@@ -116,50 +139,114 @@ describe('Sevio ID System', function () {
       expect(server.requests.length).to.equal(0);
     });
 
-    it('sends a GET with credentials and the consent params', function () {
+    it('posts JSON with credentials, the client ID and the privacy signals', function () {
       sevioIdSubmodule.getId(validConfig, consentData).callback(sinon.spy());
       expect(server.requests.length).to.equal(1);
       const request = server.requests[0];
-      expect(request.method).to.equal('GET');
+      expect(request.method).to.equal('POST');
       expect(request.withCredentials).to.be.true;
-      expect(request.url.split('?')[0]).to.equal(ID_ENDPOINT);
-      expect(requestParams(request)).to.deep.equal({
-        gdpr: '1',
-        gdpr_consent: 'CONSENT',
-        us_privacy: '1YNN',
-        gpp: 'GPPSTRING',
-        gpp_sid: '7,8'
+      expect(request.url).to.equal(ID_ENDPOINT);
+      expect(request.requestHeaders['Content-Type']).to.match(/^application\/json/);
+      expect(requestBody(request)).to.deep.equal({
+        client_id: CLIENT_ID,
+        privacy: {
+          gdpr: 1,
+          gdpr_consent: 'CONSENT',
+          us_privacy: '1YNN',
+          gpp: 'GPPSTRING',
+          gpp_sid: [7, 8]
+        }
       });
     });
 
-    it('adds the stored ID to the request when there is one', function () {
-      sevioIdSubmodule.getId(validConfig, consentData, 'stored-id').callback(sinon.spy());
-      expect(requestParams(server.requests[0]).id).to.equal('stored-id');
-    });
-
-    it('sends no consent params when there is no consent data', function () {
-      sevioIdSubmodule.getId(validConfig, undefined).callback(sinon.spy());
-      expect(requestParams(server.requests[0])).to.deep.equal({});
-    });
-
-    it('passes the ID from a successful response', function () {
-      const callback = sinon.spy();
-      sevioIdSubmodule.getId(validConfig, consentData).callback(callback);
-      server.requests[0].respond(200, { 'Content-Type': 'application/json' }, JSON.stringify({ id: 'abc' }));
-      sinon.assert.calledOnceWithExactly(callback, 'abc');
-      sinon.assert.notCalled(utils.logError);
+    it('sends gdpr 0 when GDPR does not apply', function () {
+      sevioIdSubmodule.getId(validConfig, { gdpr: { gdprApplies: false } }).callback(sinon.spy());
+      expect(requestBody(server.requests[0]).privacy).to.deep.equal({ gdpr: 0 });
     });
 
     [
-      ['a missing id', JSON.stringify({})],
-      ['an empty id', JSON.stringify({ id: '' })],
-      ['a non-string id', JSON.stringify({ id: 123 })],
+      ['lists no applicable section', [-1]],
+      ['gives no applicable sections', undefined]
+    ].forEach(([desc, applicableSections]) => {
+      it(`leaves out gpp_sid when the GPP CMP ${desc}`, function () {
+        sevioIdSubmodule.getId(validConfig, { gpp: { gppString: 'GPPSTRING', applicableSections } }).callback(sinon.spy());
+        expect(requestBody(server.requests[0]).privacy).to.deep.equal({ gpp: 'GPPSTRING' });
+      });
+    });
+
+    it('sends an empty privacy object when there is no consent data', function () {
+      sevioIdSubmodule.getId(validConfig, undefined).callback(sinon.spy());
+      expect(requestBody(server.requests[0])).to.deep.equal({ client_id: CLIENT_ID, privacy: {} });
+    });
+
+    it('presents the stored envelope in ids', function () {
+      sevioIdSubmodule.getId(validConfig, consentData, ENVELOPE).callback(sinon.spy());
+      expect(requestBody(server.requests[0]).ids).to.deep.equal([`sevio:${ENVELOPE}`]);
+    });
+
+    ['stored-id', `${ENVELOPE}=`, { id: ENVELOPE }].forEach(storedId => {
+      it(`does not present a stored ID that is not an envelope: ${JSON.stringify(storedId)}`, function () {
+        sevioIdSubmodule.getId(validConfig, consentData, storedId).callback(sinon.spy());
+        expect(requestBody(server.requests[0])).to.not.have.property('ids');
+      });
+    });
+
+    it('presents the email hash in ids', function () {
+      sevioIdSubmodule.getId({ ...validConfig, params: { clientId: CLIENT_ID, emailHash: EMAIL_HASH } }, consentData).callback(sinon.spy());
+      expect(requestBody(server.requests[0]).ids).to.deep.equal([`email_sha256:${EMAIL_HASH}`]);
+      sinon.assert.notCalled(utils.logWarn);
+    });
+
+    it('presents the stored envelope before the email hash', function () {
+      sevioIdSubmodule.getId({ ...validConfig, params: { clientId: CLIENT_ID, emailHash: EMAIL_HASH } }, consentData, ENVELOPE).callback(sinon.spy());
+      expect(requestBody(server.requests[0]).ids).to.deep.equal([`sevio:${ENVELOPE}`, `email_sha256:${EMAIL_HASH}`]);
+    });
+
+    it('lowercases and trims the email hash', function () {
+      sevioIdSubmodule.getId({ ...validConfig, params: { clientId: CLIENT_ID, emailHash: ` ${EMAIL_HASH.toUpperCase()} ` } }, consentData).callback(sinon.spy());
+      expect(requestBody(server.requests[0]).ids).to.deep.equal([`email_sha256:${EMAIL_HASH}`]);
+    });
+
+    ['', 'not-a-hash', EMAIL_HASH.slice(1), `${EMAIL_HASH}0`, 123].forEach(emailHash => {
+      it(`warns and does not send an email hash of ${JSON.stringify(emailHash)}`, function () {
+        sevioIdSubmodule.getId({ ...validConfig, params: { clientId: CLIENT_ID, emailHash } }, consentData, ENVELOPE).callback(sinon.spy());
+        expect(requestBody(server.requests[0]).ids).to.deep.equal([`sevio:${ENVELOPE}`]);
+        sinon.assert.calledOnce(utils.logWarn);
+      });
+    });
+
+    it('passes the sevio_id from a successful response and ignores syncs', function () {
+      const callback = sinon.spy();
+      sevioIdSubmodule.getId(validConfig, consentData, ENVELOPE).callback(callback);
+      respondWith(server.requests[0], {
+        sevio_id: NEW_ENVELOPE,
+        changed: false,
+        syncs: [{ partner: 'bidswitch', ttl: 604800, url: `https://x.bidswitch.net/sync?dsp_id=sevio&user_id=${NEW_ENVELOPE}` }]
+      });
+      sinon.assert.calledOnceWithExactly(callback, NEW_ENVELOPE);
+      sinon.assert.notCalled(utils.logError);
+      expect(server.requests.length).to.equal(1);
+    });
+
+    it('passes nothing and logs no error when the Identity service answers a null sevio_id', function () {
+      const callback = sinon.spy();
+      sevioIdSubmodule.getId(validConfig, consentData).callback(callback);
+      respondWith(server.requests[0], { sevio_id: null, changed: false });
+      sinon.assert.calledOnceWithExactly(callback);
+      sinon.assert.notCalled(utils.logError);
+      sinon.assert.calledOnce(utils.logInfo);
+    });
+
+    [
+      ['a missing sevio_id', {}],
+      ['an empty sevio_id', { sevio_id: '' }],
+      ['a non-string sevio_id', { sevio_id: 123 }],
       ['invalid JSON', 'not json']
     ].forEach(([desc, body]) => {
       it(`passes nothing and logs an error for ${desc}`, function () {
         const callback = sinon.spy();
         sevioIdSubmodule.getId(validConfig, consentData).callback(callback);
-        server.requests[0].respond(200, { 'Content-Type': 'application/json' }, body);
+        respondWith(server.requests[0], body);
         sinon.assert.calledOnceWithExactly(callback);
         sinon.assert.calledOnce(utils.logError);
       });
@@ -182,25 +269,31 @@ describe('Sevio ID System', function () {
       HTML5_SUFFIXES.forEach(suffix => coreStorage.removeDataFromLocalStorage(STORAGE_NAME + suffix));
     }
 
-    function seedCookie(id) {
+    function seedCookie(id, lastUpdated) {
       coreStorage.setCookie(STORAGE_NAME, id, future());
       coreStorage.setCookie(`${STORAGE_NAME}_cst`, getConsentHash(), future());
+      if (lastUpdated) {
+        coreStorage.setCookie(`${STORAGE_NAME}_last`, lastUpdated, future());
+      }
     }
 
-    function seedLocalStorage(id) {
+    function seedLocalStorage(id, lastUpdated) {
       coreStorage.setDataInLocalStorage(STORAGE_NAME, id);
       coreStorage.setDataInLocalStorage(`${STORAGE_NAME}_exp`, future());
       coreStorage.setDataInLocalStorage(`${STORAGE_NAME}_cst`, getConsentHash());
+      if (lastUpdated) {
+        coreStorage.setDataInLocalStorage(`${STORAGE_NAME}_last`, lastUpdated);
+      }
     }
 
-    function startUserId() {
+    function startUserId(userIdConfig = validConfig) {
       init(config);
       setSubmoduleRegistry([sevioIdSubmodule]);
       config.setConfig({
         userSync: {
           syncDelay: 0,
           auctionDelay: 100,
-          userIds: [validConfig]
+          userIds: [userIdConfig]
         }
       });
     }
@@ -258,12 +351,31 @@ describe('Sevio ID System', function () {
       await waitForRequest();
 
       expect(server.requests.length).to.equal(1);
-      server.requests[0].respond(200, { 'Content-Type': 'application/json' }, JSON.stringify({ id: 'id-new' }));
+      expect(requestBody(server.requests[0])).to.not.have.property('ids');
+      respondWith(server.requests[0], { sevio_id: NEW_ENVELOPE, changed: true });
       await ids;
 
-      expect(getGlobal().getUserIds().sevioId).to.equal('id-new');
-      expect(coreStorage.getCookie(STORAGE_NAME)).to.equal('id-new');
-      expect(coreStorage.getDataFromLocalStorage(STORAGE_NAME)).to.equal('id-new');
+      expect(getGlobal().getUserIds().sevioId).to.equal(NEW_ENVELOPE);
+      expect(coreStorage.getCookie(STORAGE_NAME)).to.equal(NEW_ENVELOPE);
+      expect(coreStorage.getDataFromLocalStorage(STORAGE_NAME)).to.equal(NEW_ENVELOPE);
+    });
+
+    it('presents the stored envelope once refreshInSeconds elapses and stores the resealed one', async function () {
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toUTCString();
+      seedCookie(ENVELOPE, twoDaysAgo);
+      seedLocalStorage(ENVELOPE, twoDaysAgo);
+      startUserId({ ...validConfig, storage: { ...validConfig.storage, refreshInSeconds: 86400 } });
+      const ids = getGlobal().getUserIdsAsync();
+      await waitForRequest();
+
+      expect(server.requests.length).to.equal(1);
+      expect(requestBody(server.requests[0]).ids).to.deep.equal([`sevio:${ENVELOPE}`]);
+      respondWith(server.requests[0], { sevio_id: NEW_ENVELOPE, changed: false });
+      await ids;
+
+      expect(getGlobal().getUserIds().sevioId).to.equal(NEW_ENVELOPE);
+      expect(coreStorage.getCookie(STORAGE_NAME)).to.equal(NEW_ENVELOPE);
+      expect(coreStorage.getDataFromLocalStorage(STORAGE_NAME)).to.equal(NEW_ENVELOPE);
     });
 
     it('provides no ID, no EID and makes no request under COPPA, even with a stored ID', async function () {

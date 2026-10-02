@@ -6,13 +6,15 @@ Maintainer: technical@sevio.com
 
 # Description
 
-The Sevio User ID submodule provides the Sevio ID, a device-based identifier issued by Sevio's ID
+The Sevio User ID submodule provides the Sevio ID, an opaque identifier issued by Sevio's Identity
 service, to bid adapters through `bidRequest.userId.sevioId` and as an OpenRTB Extended ID under the
 source `adx.ws`.
 
-The ID is fetched from Sevio's ID service once and then kept in first-party storage by Prebid's
-`userId` module. The submodule never reads or writes storage itself. While a valid stored ID exists,
-no request is made to the ID service.
+The ID is fetched from Sevio's Identity service (`https://id.sevio.com/identity/resolve`) and then
+kept in first-party storage by Prebid's `userId` module. The submodule never reads or writes storage
+itself. A request is made only when no valid ID is stored, when `storage.refreshInSeconds` elapses, or
+when the consent state changes. A refresh presents the stored ID to the Identity service, which
+answers with a freshly sealed ID for the same user, so the stored value changes on every refresh.
 
 # Building Prebid with Sevio ID support
 
@@ -33,10 +35,14 @@ pbjs.setConfig({
     userSync: {
         userIds: [{
             name: 'sevioId',
+            params: {
+                clientId: 'your-sevio-client-id'
+            },
             storage: {
                 type: 'cookie&html5',
                 name: '_sevioId',
-                expires: 30
+                expires: 30,
+                refreshInSeconds: 86400
             }
         }]
     }
@@ -46,14 +52,23 @@ pbjs.setConfig({
 | Param under `userSync.userIds[]` | Scope | Type | Description | Example |
 | --- | --- | --- | --- | --- |
 | `name` | Required | String | The name of this module. Must be exactly `sevioId`. | `'sevioId'` |
+| `params` | Required | Object | Module parameters. | |
+| `params.clientId` | Required | String | The client ID Sevio assigned to the integration. Without it the module logs an error and provides no ID. | `'your-sevio-client-id'` |
+| `params.emailHash` | Optional | String | SHA-256 hash of the user's email address, as 64 hex characters. Sent to the Identity service with the next request, so that the user is recognised across sites. A value of any other shape logs a warning and is not sent. | `'a1b2c3…'` |
 | `storage` | Required | Object | Prebid-managed storage for the ID. Without it the module logs an error and provides no ID. | |
 | `storage.type` | Required | String | Must be `cookie&html5`. Other values log a warning; the module still works, but without the cookie-first, `localStorage`-fallback behaviour described below. | `'cookie&html5'` |
 | `storage.name` | Required | String | Name of the cookie and `localStorage` key. `_sevioId` is recommended, because it is the name Sevio's storage disclosure lists. | `'_sevioId'` |
 | `storage.expires` | Required | Number | Days the stored ID is kept. Without it the cookie is session-only and the `localStorage` copy is ignored, so the ID is fetched again on every visit. | `30` |
-| `storage.refreshInSeconds` | Optional | Number | Seconds after which the ID is fetched again and both stores are rewritten. | `86400` |
+| `storage.refreshInSeconds` | Recommended | Number | Seconds after which the stored ID is presented to the Identity service again and both stores are rewritten with the answer. Without it the ID is refreshed only when it expires or consent changes. | `86400` |
 | `bidders` | Optional | Array of strings | Restricts which bidders receive the ID. | `['sevio']` |
 
-The submodule takes no `params`.
+## Email hash
+
+The hash is sent only when a request is made (see the Description), not on every page view. When the
+hash becomes known after an ID is already stored, for example after the user logs in, update the
+config and call `pbjs.refreshUserIds({ submoduleNames: ['sevioId'] })` to send it right away. The
+Identity service matches hashes exactly, so normalise the address the same way on every site (for
+example trimmed and lowercased) before hashing it. The hash is never stored by the submodule.
 
 # Storage
 
@@ -81,9 +96,13 @@ ID.
 
 - The submodule declares GVL ID `1393`. When `tcfControl` is enabled, Prebid's TCF enforcement
   requires Purpose 1 consent and vendor consent for GVL ID `1393` before the ID can be stored or read.
-- The consent signals present on the page are forwarded to Sevio's ID service as the query
-  parameters `gdpr`, `gdpr_consent`, `us_privacy`, `gpp` and `gpp_sid`, together with the stored ID
-  (`id`) when one exists. The request is sent with credentials.
+- The request is a `POST` to `https://id.sevio.com/identity/resolve` with a JSON body, sent with
+  credentials. The body carries `params.clientId` as `client_id`, the stored ID and
+  `params.emailHash` when present, and the consent signals present on the page in a `privacy` object: `gdpr`, `gdpr_consent`,
+  `us_privacy`, `gpp` and `gpp_sid`.
+- The Identity service provides no ID when the privacy signals refuse it, and also when the page
+  carries no consent signal at all. Include the consent management modules that apply to your
+  traffic.
 - No ID is provided under COPPA. When COPPA applies, the module makes no request, and an ID that is
   already stored is not passed to bidders either.
 - **`userSync.enforceStorageType` caveat:** Prebid currently compares each storage write's single

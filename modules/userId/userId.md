@@ -199,10 +199,14 @@ pbjs.setConfig({
         },
         {
             name: "sevioId",
+            params: {
+                clientId: "your-sevio-client-id"
+            },
             storage: {
                 type: "cookie&html5",
                 name: "_sevioId",
-                expires: 30
+                expires: 30,
+                refreshInSeconds: 86400
             }
         }
         ],
